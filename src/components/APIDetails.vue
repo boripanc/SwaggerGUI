@@ -97,6 +97,27 @@
                           v-model="payload"
                           type="textarea"
                           label="payload"
+                          @update:model-value="
+                            (v) => {
+                              this.value = prettyprint(v);
+                            }
+                          "
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="col">
+                      <div class="q-gutter-sm">
+                        <q-input
+                          v-model="response"
+                          type="textarea"
+                          label="response"
+                          @update:model-value="
+                            (v) => {
+                              this.value = prettyprintResponse(v);
+                            }
+                          "
                         />
                       </div>
                     </div>
@@ -156,7 +177,9 @@ export default {
     const swagger = ref({});
     var httpmethod = ref(null);
     var payload = ref("");
+    var response = ref("");
     const swaggerUI = ref({});
+    const refRequest = ref({});
     var methods = [
       "post",
       "GET",
@@ -199,6 +222,9 @@ export default {
       swagger,
       swaggerUI,
       payload,
+      refRequest,
+      response,
+      route,
     };
   },
   mounted() {},
@@ -219,33 +245,158 @@ export default {
         dom_id: "#swagger",
       });
     },
+    prettyprint(v) {
+      this.payload = JSON.stringify(JSON.parse(v), null, 2);
+    },
+    prettyprintResponse(v) {
+      this.response = JSON.stringify(JSON.parse(v), null, 2);
+    },
+    generateSchemas(payloadObj, type) {
+      var schema = {};
+      schema[this.resource + type] = {};
+      schema[this.resource + type]["type"] = "object";
+      var props = {};
+      var request = JSON.parse(payloadObj);
+      var nodes = Object.keys(request);
+      for (let node in nodes) {
+        var typ = "";
+        props[nodes[node]] = {};
+        if (typeof request[nodes[node]] != "object") {
+          typ = typeof request[nodes[node]];
+          if (typ == "number") typ == "integer";
+          props[nodes[node]]["type"] = typ;
+          props[nodes[node]]["example"] = request[nodes[node]];
+        } else if (Array.isArray(request[nodes[node]])) {
+          typ = "array";
+          props[nodes[node]]["type"] = typ;
+
+          if (typeof request[nodes[node]][0] == "object") {
+            props[nodes[node]]["items"] = {
+              type: "object",
+              properties: this.getObjectChild(request[nodes[node]][0]),
+            };
+          } else {
+            props[nodes[node]]["items"] = {
+              type: typeof request[nodes[node]][0],
+              example: request[nodes[node]][0],
+            };
+          }
+        } else {
+          typ = "object";
+          props[nodes[node]]["type"] = typ;
+          props[nodes[node]]["properties"] = this.getObjectChild(
+            request[nodes[node]]
+          );
+        }
+      }
+      console.log(props);
+      schema[this.resource + type]["properties"] = JSON.parse(
+        JSON.stringify(props)
+      );
+      return schema;
+    },
+    getObjectChild(request) {
+      var props = {};
+      var nodes = Object.keys(request);
+      for (let node in nodes) {
+        var typ = "";
+        props[nodes[node]] = {};
+        if (typeof request[nodes[node]] != "object") {
+          typ = typeof request[nodes[node]];
+          if (typ == "number") typ == "integer";
+          props[nodes[node]]["type"] = typ;
+          props[nodes[node]]["example"] = request[nodes[node]];
+        } else if (Array.isArray(request[nodes[node]])) {
+          typ = "array";
+          props[nodes[node]]["type"] = typ;
+
+          if (typeof request[nodes[node]][0] == "object") {
+            props[nodes[node]]["items"] = {
+              type: "object",
+              properties: this.getObjectChild(request[nodes[node]][0]),
+            };
+          } else {
+            props[nodes[node]]["items"] = {
+              type: typeof request[nodes[node]][0],
+              example: request[nodes[node]][0],
+            };
+          }
+        } else {
+          typ = "object";
+          props[nodes[node]]["type"] = typ;
+          props[nodes[node]]["properties"] = this.getObjectChild(
+            request[nodes[node]]
+          );
+        }
+      }
+      return props;
+    },
     addOperation() {
       var request = JSON.parse(this.payload);
       var nodes = Object.keys(request);
-      //console.log(nodes);
-      var attrs = []; // Array to store all the attributes
-      console.log(nodes);
-      for (let node in nodes) {
-        // getting the attributes of current node.
-        console.log(node);
-        if (typeof request[nodes[node]] != "object") {
-          console.log(typeof request[nodes[node]]);
-        } else if (Array.isArray(request[nodes[node]])) {
-          console.log("array");
-        } else {
-          console.log("object");
-        }
-      }
+
+      var requestBody = this.generateSchemas(this.payload, "_request");
+      var responseBody = this.generateSchemas(this.response, "_response");
       this.swagger.paths = {};
       this.swagger.paths["/" + this.resource] = {};
       this.swagger.paths["/" + this.resource][this.httpmethod] = {};
       this.swagger.paths["/" + this.resource][this.httpmethod]["summary"] =
         this.summary;
+      this.swagger.paths["/" + this.resource][this.httpmethod]["requestBody"] =
+        {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/" + this.resource + "_request",
+              },
+            },
+          },
+        };
+      this.swagger.paths["/" + this.resource][this.httpmethod]["responses"] = {
+        200: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/" + this.resource + "_response",
+              },
+            },
+          },
+        },
+      };
+      this.swagger["components"] = {};
+      this.swagger["components"]["schemas"] = {};
+      this.swagger["components"]["schemas"][this.resource + "_request"] =
+        requestBody[this.resource + "_request"];
+      this.swagger["components"]["schemas"][this.resource + "_response"] =
+        responseBody[this.resource + "_response"];
+      console.log(JSON.stringify(this.swagger));
       this.swaggerUI = null;
       this.swaggerUI = SwaggerUI({
         spec: this.swagger,
         dom_id: "#swagger",
       });
+      api
+        .post("/apis/" + this.route.params.id + "/operation", {
+          HTTPMethod: this.httpmethod,
+          Resource: this.resource,
+          Parameters: this.parameters,
+          RequestBody: this.payload,
+          ResponseBody: this.response,
+        })
+        .then((response) => {
+          console.log(response.data[0]);
+          apiname.value = response.data[0].name;
+          version.value = response.data[0].version;
+          description.value = response.data[0].description;
+          swagger.value = response.data[0].Swagger;
+
+          const spec = swagger.value;
+          var swaggerUI = SwaggerUI({
+            spec: spec,
+            dom_id: "#swagger",
+          });
+        })
+        .finally(() => {});
     },
   },
   data() {},
